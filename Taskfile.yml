@@ -1,0 +1,12 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build for current platform (macOS)
+    cmds:
+      - CGO_CFLAGS="-I/opt/homebrew/opt/hackrf/include" CGO_LDFLAGS="-L/opt/homebrew/opt/hackrf/lib" go build -o bin/hackdvbs .
+
+  release:
+    desc: Build for Raspberry Pi 5 (arm64 linux)
+    cmds:
+      - CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-musl-gcc CGO_CFLAGS="-I/opt/homebrew/opt/hackrf/include" CGO_LDFLAGS="-L/opt/homebrew/opt/hackrf/lib" go build -o bin/hackdvbs-rpi5 .

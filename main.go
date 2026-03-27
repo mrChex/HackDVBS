@@ -7,6 +7,7 @@ import (
     "log"
     "os/exec"
     "strconv"
+    "strings"
     "time"
 
     "github.com/samuel/go-hackrf/hackrf"
@@ -31,12 +32,14 @@ func main() {
     fps := flag.Int("fps", 30, "Frames per second")
     colorBars := flag.Bool("colorbars", false, "Use SMPTE color bars instead of webcam")
     inputFile := flag.String("file", "", "Transmit a pre-recorded .ts file instead of live source")
+    libCamera := flag.Bool("libcamera", false, "Use rpicam-vid (libcamera) as video source (Raspberry Pi CM5/Pi 5)")
     flag.Parse()
 
     log.Println("--- Starting DVB-S Webcam Transmitter ---")
     log.Printf("Frequency: %.2f MHz, Gain: %d dB", *freq, *gain)
 
     var ffmpegCmd *exec.Cmd
+    var rpicamCmd *exec.Cmd
     if *inputFile != "" {
         log.Printf("Source: File (%s)", *inputFile)
         ffmpegCmd = buildFileCommand(*inputFile)
@@ -44,10 +47,27 @@ func main() {
         log.Printf("Video: %s @ %d fps, bitrate: %s", *videoSize, *fps, *videoBitrate)
         log.Println("Source: SMPTE Color Bars (test pattern)")
         ffmpegCmd = buildFFmpegCommand(*device, *videoSize, *fps, *videoBitrate, *audioBitrate, true)
+    } else if *libCamera {
+        log.Printf("Video: %s @ %d fps, bitrate: %s", *videoSize, *fps, *videoBitrate)
+        log.Println("Source: libcamera (rpicam-vid)")
+        rpicamCmd, ffmpegCmd = buildLibcameraCommands(*videoSize, *fps, *videoBitrate, *audioBitrate)
     } else {
         log.Printf("Video: %s @ %d fps, bitrate: %s", *videoSize, *fps, *videoBitrate)
         log.Printf("Source: Webcam (%s)", *device)
         ffmpegCmd = buildFFmpegCommand(*device, *videoSize, *fps, *videoBitrate, *audioBitrate, false)
+    }
+
+    // Start rpicam-vid if using libcamera mode (must start before ffmpeg)
+    if rpicamCmd != nil {
+        rpicamStderr, err := rpicamCmd.StderrPipe()
+        if err != nil {
+            log.Fatalf("Failed to get rpicam-vid stderr pipe: %v", err)
+        }
+        if err := rpicamCmd.Start(); err != nil {
+            log.Fatalf("Failed to start rpicam-vid: %v", err)
+        }
+        defer rpicamCmd.Process.Kill()
+        go utils.LogProcess(rpicamStderr, "rpicam-vid")
     }
 
     // Start FFmpeg to capture webcam and encode to MPEG-TS
@@ -272,6 +292,50 @@ func buildFFmpegCommand(device, videoSize string, fps int, videoBitrate, audioBi
         "-",
     }
     return exec.Command("ffmpeg", args...)
+}
+
+func buildLibcameraCommands(videoSize string, fps int, videoBitrate, audioBitrate string) (*exec.Cmd, *exec.Cmd) {
+    parts := strings.SplitN(videoSize, "x", 2)
+    width, height := parts[0], parts[1]
+
+    rpicamCmd := exec.Command("rpicam-vid",
+        "--width", width,
+        "--height", height,
+        "--framerate", strconv.Itoa(fps),
+        "--nopreview",
+        "--timeout", "0",
+        "--codec", "yuv420",
+        "-o", "-",
+    )
+
+    ffmpegCmd := exec.Command("ffmpeg",
+        "-f", "rawvideo",
+        "-pix_fmt", "yuv420p",
+        "-s", videoSize,
+        "-r", strconv.Itoa(fps),
+        "-i", "pipe:0",
+        "-f", "lavfi",
+        "-i", "aevalsrc=0:c=stereo:s=44100",
+        "-c:v", "mpeg2video",
+        "-pix_fmt", "yuv420p",
+        "-b:v", videoBitrate,
+        "-maxrate", videoBitrate,
+        "-bufsize", "1400k",
+        "-g", "10",
+        "-bf", "0",
+        "-c:a", "mp2",
+        "-b:a", audioBitrate,
+        "-ar", "44100",
+        "-f", "mpegts",
+        "-muxrate", "1M",
+        "-pcr_period", "20",
+        "-",
+    )
+
+    rpicamStdout, _ := rpicamCmd.StdoutPipe()
+    ffmpegCmd.Stdin = rpicamStdout
+
+    return rpicamCmd, ffmpegCmd
 }
 
 func buildFileCommand(filename string) *exec.Cmd {

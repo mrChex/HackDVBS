@@ -6,12 +6,14 @@ import (
 	"log"
 )
 
-func LogFFmpeg(ffmpegStderr io.Reader) {
-	scanner := bufio.NewScanner(ffmpegStderr)
+func LogProcess(stderr io.Reader, prefix string) {
+	scanner := bufio.NewScanner(stderr)
 	for scanner.Scan() {
-		log.Printf("[ffmpeg] %s", scanner.Text())
+		log.Printf("[%s] %s", prefix, scanner.Text())
 	}
 }
+
+func LogFFmpeg(ffmpegStderr io.Reader) { LogProcess(ffmpegStderr, "ffmpeg") }
 
 // Parity returns 1 if the number of set bits is odd, else 0
 func Parity(n uint16) byte {
